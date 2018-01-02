@@ -1,6 +1,7 @@
 package release
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 	"time"
@@ -19,11 +20,12 @@ import (
 
 var (
 	// This must match the value in cluster/kubernetes/testfiles/data.go
-	container = "goodbyeworld"
+	helloContainer   = "greeter"
+	sidecarContainer = "sidecar"
 
 	oldImage      = "quay.io/weaveworks/helloworld:master-a000001"
 	oldRef, _     = image.ParseRef(oldImage)
-	sidecarImage  = "quay.io/weaveworks/sidecar:master-a000002"
+	sidecarImage  = "weaveworks/sidecar:master-a000001"
 	sidecarRef, _ = image.ParseRef(sidecarImage)
 	hwSvcID, _    = flux.ParseResourceID("default:deployment/helloworld")
 	hwSvcSpec, _  = update.ParseResourceSpec(hwSvcID.String())
@@ -32,12 +34,12 @@ var (
 		Containers: cluster.ContainersOrExcuse{
 			Containers: []cluster.Container{
 				cluster.Container{
-					Name:  container,
+					Name:  helloContainer,
 					Image: oldImage,
 				},
 				cluster.Container{
-					Name:  "sidecar",
-					Image: "quay.io/weaveworks/sidecar:master-a000002",
+					Name:  sidecarContainer,
+					Image: sidecarImage,
 				},
 			},
 		},
@@ -78,12 +80,22 @@ var (
 		lockedSvc,
 		testSvc,
 	}
-	newRef, _    = image.ParseRef("quay.io/weaveworks/helloworld:master-a000002")
-	timeNow      = time.Now()
+	newHwRef, _ = image.ParseRef("quay.io/weaveworks/helloworld:master-a000002")
+	// this is what we expect things to be updated to
+	newSidecarRef, _ = image.ParseRef("weaveworks/sidecar:master-a000002")
+	// this is what we store in the registry cache
+	canonSidecarRef, _ = image.ParseRef("index.docker.io/weaveworks/sidecar:master-a000002")
+
+	timeNow = time.Now()
+
 	mockRegistry = &registryMock.Registry{
 		Images: []image.Info{
 			{
-				ID:        newRef,
+				ID:        newHwRef,
+				CreatedAt: timeNow,
+			},
+			{
+				ID:        newSidecarRef,
 				CreatedAt: timeNow,
 			},
 			{
@@ -95,23 +107,31 @@ var (
 	mockManifests = &kubernetes.Manifests{}
 )
 
+func mockCluster(running ...cluster.Controller) *cluster.Mock {
+	return &cluster.Mock{
+		AllServicesFunc: func(string) ([]cluster.Controller, error) {
+			return running, nil
+		},
+		SomeServicesFunc: func(ids []flux.ResourceID) ([]cluster.Controller, error) {
+			var res []cluster.Controller
+			for _, id := range ids {
+				for _, svc := range running {
+					if id == svc.ID {
+						res = append(res, svc)
+					}
+				}
+			}
+			return res, nil
+		},
+	}
+}
+
 func setup(t *testing.T) (*git.Checkout, func()) {
 	return gittest.Checkout(t)
 }
 
 func Test_FilterLogic(t *testing.T) {
-	mockCluster := &cluster.Mock{
-		AllServicesFunc: func(string) ([]cluster.Controller, error) {
-			return allSvcs, nil
-		},
-		SomeServicesFunc: func([]flux.ResourceID) ([]cluster.Controller, error) {
-			return []cluster.Controller{
-				hwSvc,
-				lockedSvc,
-			}, nil
-		},
-	}
-
+	cluster := mockCluster(hwSvc, lockedSvc) // no testsvc in cluster, but it _is_ in repo
 	notInRepoService := "default:deployment/notInRepo"
 	notInRepoSpec, _ := update.ParseResourceSpec(notInRepoService)
 	for _, tst := range []struct {
@@ -121,7 +141,7 @@ func Test_FilterLogic(t *testing.T) {
 	}{
 		// ignored if: excluded OR not included OR not correct image.
 		{
-			Name: "not included",
+			Name: "include specific service",
 			Spec: update.ReleaseSpec{
 				ServiceSpecs: []update.ResourceSpec{hwSvcSpec},
 				ImageSpec:    update.ImageSpecLatest,
@@ -133,9 +153,14 @@ func Test_FilterLogic(t *testing.T) {
 					Status: update.ReleaseStatusSuccess,
 					PerContainer: []update.ContainerUpdate{
 						update.ContainerUpdate{
-							Container: container,
+							Container: helloContainer,
 							Current:   oldRef,
-							Target:    newRef,
+							Target:    newHwRef,
+						},
+						update.ContainerUpdate{
+							Container: sidecarContainer,
+							Current:   sidecarRef,
+							Target:    newSidecarRef,
 						},
 					},
 				},
@@ -149,7 +174,7 @@ func Test_FilterLogic(t *testing.T) {
 				},
 			},
 		}, {
-			Name: "excluded",
+			Name: "exclude specific service",
 			Spec: update.ReleaseSpec{
 				ServiceSpecs: []update.ResourceSpec{update.ResourceSpecAll},
 				ImageSpec:    update.ImageSpecLatest,
@@ -161,9 +186,14 @@ func Test_FilterLogic(t *testing.T) {
 					Status: update.ReleaseStatusSuccess,
 					PerContainer: []update.ContainerUpdate{
 						update.ContainerUpdate{
-							Container: container,
+							Container: helloContainer,
 							Current:   oldRef,
-							Target:    newRef,
+							Target:    newHwRef,
+						},
+						update.ContainerUpdate{
+							Container: sidecarContainer,
+							Current:   sidecarRef,
+							Target:    newSidecarRef,
 						},
 					},
 				},
@@ -177,10 +207,10 @@ func Test_FilterLogic(t *testing.T) {
 				},
 			},
 		}, {
-			Name: "not image",
+			Name: "update specific image",
 			Spec: update.ReleaseSpec{
 				ServiceSpecs: []update.ResourceSpec{update.ResourceSpecAll},
-				ImageSpec:    update.ImageSpecFromRef(newRef),
+				ImageSpec:    update.ImageSpecFromRef(newHwRef),
 				Kind:         update.ReleaseKindExecute,
 				Excludes:     []flux.ResourceID{},
 			},
@@ -189,9 +219,9 @@ func Test_FilterLogic(t *testing.T) {
 					Status: update.ReleaseStatusSuccess,
 					PerContainer: []update.ContainerUpdate{
 						update.ContainerUpdate{
-							Container: container,
+							Container: helloContainer,
 							Current:   oldRef,
-							Target:    newRef,
+							Target:    newHwRef,
 						},
 					},
 				},
@@ -200,7 +230,7 @@ func Test_FilterLogic(t *testing.T) {
 					Error:  update.DifferentImage,
 				},
 				flux.MustParseResourceID("default:deployment/test-service"): update.ControllerResult{
-					Status: update.ReleaseStatusIgnored,
+					Status: update.ReleaseStatusSkipped,
 					Error:  update.NotInCluster,
 				},
 			},
@@ -220,9 +250,14 @@ func Test_FilterLogic(t *testing.T) {
 					Status: update.ReleaseStatusSuccess,
 					PerContainer: []update.ContainerUpdate{
 						update.ContainerUpdate{
-							Container: container,
+							Container: helloContainer,
 							Current:   oldRef,
-							Target:    newRef,
+							Target:    newHwRef,
+						},
+						update.ContainerUpdate{
+							Container: sidecarContainer,
+							Current:   sidecarRef,
+							Target:    newSidecarRef,
 						},
 					},
 				},
@@ -249,9 +284,14 @@ func Test_FilterLogic(t *testing.T) {
 					Status: update.ReleaseStatusSuccess,
 					PerContainer: []update.ContainerUpdate{
 						update.ContainerUpdate{
-							Container: container,
+							Container: helloContainer,
 							Current:   oldRef,
-							Target:    newRef,
+							Target:    newHwRef,
+						},
+						update.ContainerUpdate{
+							Container: sidecarContainer,
+							Current:   sidecarRef,
+							Target:    newSidecarRef,
 						},
 					},
 				},
@@ -296,7 +336,7 @@ func Test_FilterLogic(t *testing.T) {
 		checkout, cleanup := setup(t)
 		defer cleanup()
 		testRelease(t, tst.Name, &ReleaseContext{
-			cluster:   mockCluster,
+			cluster:   cluster,
 			manifests: mockManifests,
 			registry:  mockRegistry,
 			repo:      checkout,
@@ -305,19 +345,7 @@ func Test_FilterLogic(t *testing.T) {
 }
 
 func Test_ImageStatus(t *testing.T) {
-	mockCluster := &cluster.Mock{
-		AllServicesFunc: func(string) ([]cluster.Controller, error) {
-			return allSvcs, nil
-		},
-		SomeServicesFunc: func([]flux.ResourceID) ([]cluster.Controller, error) {
-			return []cluster.Controller{
-				hwSvc,
-				lockedSvc,
-				testSvc,
-			}, nil
-		},
-	}
-
+	cluster := mockCluster(hwSvc, lockedSvc, testSvc)
 	upToDateRegistry := &registryMock.Registry{
 		Images: []image.Info{
 			{
@@ -386,7 +414,7 @@ func Test_ImageStatus(t *testing.T) {
 		checkout, cleanup := setup(t)
 		defer cleanup()
 		ctx := &ReleaseContext{
-			cluster:   mockCluster,
+			cluster:   cluster,
 			manifests: mockManifests,
 			repo:      checkout,
 			registry:  upToDateRegistry,
@@ -401,6 +429,8 @@ func testRelease(t *testing.T, name string, ctx *ReleaseContext, spec update.Rel
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(expected, results) {
-		t.Errorf("%s - expected:\n%#v, got:\n%#v", name, expected, results)
+		exp, _ := json.Marshal(expected)
+		got, _ := json.Marshal(results)
+		t.Errorf("%s\n--- expected ---\n%s\n--- got ---\n%s\n", name, string(exp), string(got))
 	}
 }

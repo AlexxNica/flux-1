@@ -3,21 +3,21 @@ package kubernetes
 import (
 	"bytes"
 	"fmt"
+	"sync"
 
 	k8syaml "github.com/ghodss/yaml"
 	"github.com/go-kit/kit/log"
 	"github.com/pkg/errors"
 	"gopkg.in/yaml.v2"
+	apiv1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/discovery"
 	k8sclient "k8s.io/client-go/kubernetes"
 	v1beta1apps "k8s.io/client-go/kubernetes/typed/apps/v1beta1"
-	v2alpha1batch "k8s.io/client-go/kubernetes/typed/batch/v2alpha1"
+	v1beta1batch "k8s.io/client-go/kubernetes/typed/batch/v1beta1"
 	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
 	v1beta1extensions "k8s.io/client-go/kubernetes/typed/extensions/v1beta1"
-	"k8s.io/client-go/pkg/api"
-	apiv1 "k8s.io/client-go/pkg/api/v1"
 
 	"github.com/weaveworks/flux"
 	"github.com/weaveworks/flux/cluster"
@@ -37,12 +37,11 @@ type extendedClient struct {
 	v1core.CoreV1Interface
 	v1beta1extensions.ExtensionsV1beta1Interface
 	v1beta1apps.StatefulSetsGetter
-	v2alpha1batch.CronJobsGetter
+	v1beta1batch.CronJobsGetter
 }
 
 type apiObject struct {
 	bytes    []byte
-	Version  string `yaml:"apiVersion"`
 	Kind     string `yaml:"kind"`
 	Metadata struct {
 		Name      string `yaml:"name"`
@@ -50,11 +49,8 @@ type apiObject struct {
 	} `yaml:"metadata"`
 }
 
-func (obj *apiObject) namespaceOrDefault() string {
-	if obj.Metadata.Namespace == "" {
-		return "default"
-	}
-	return obj.Metadata.Namespace
+func (o *apiObject) hasNamespace() bool {
+	return o.Metadata.Namespace != ""
 }
 
 // --- add-ons
@@ -88,9 +84,33 @@ func isAddon(obj namespacedLabeled) bool {
 
 // --- /add ons
 
+type changeSet struct {
+	nsObjs   map[string][]obj
+	noNsObjs map[string][]obj
+}
+
+func makeChangeSet() changeSet {
+	return changeSet{
+		nsObjs:   make(map[string][]obj),
+		noNsObjs: make(map[string][]obj),
+	}
+}
+
+func (c *changeSet) stage(cmd, id string, o *apiObject) {
+	if o.hasNamespace() {
+		c.nsObjs[cmd] = append(c.nsObjs[cmd], obj{id, o})
+	} else {
+		c.noNsObjs[cmd] = append(c.noNsObjs[cmd], obj{id, o})
+	}
+}
+
+type obj struct {
+	id string
+	*apiObject
+}
+
 type Applier interface {
-	Delete(logger log.Logger, def *apiObject) error
-	Apply(logger log.Logger, def *apiObject) error
+	apply(log.Logger, changeSet, cluster.SyncError)
 }
 
 // Cluster is a handle to a Kubernetes API server.
@@ -98,18 +118,18 @@ type Applier interface {
 type Cluster struct {
 	client     extendedClient
 	applier    Applier
-	actionc    chan func()
 	version    string // string response for the version command.
 	logger     log.Logger
 	sshKeyRing ssh.KeyRing
+
+	mu sync.Mutex
 }
 
-// NewCluster returns a usable cluster. Host should be of the form
-// "http://hostname:8080".
+// NewCluster returns a usable cluster.
 func NewCluster(clientset k8sclient.Interface,
 	applier Applier,
 	sshKeyRing ssh.KeyRing,
-	logger log.Logger) (*Cluster, error) {
+	logger log.Logger) *Cluster {
 
 	c := &Cluster{
 		client: extendedClient{
@@ -117,27 +137,14 @@ func NewCluster(clientset k8sclient.Interface,
 			clientset.Core(),
 			clientset.Extensions(),
 			clientset.AppsV1beta1(),
-			clientset.BatchV2alpha1()},
+			clientset.BatchV1beta1(),
+		},
 		applier:    applier,
-		actionc:    make(chan func()),
 		logger:     logger,
 		sshKeyRing: sshKeyRing,
 	}
 
-	go c.loop()
-	return c, nil
-}
-
-// Stop terminates the goroutine that serializes and executes requests against
-// the cluster. A stopped cluster cannot be restarted.
-func (c *Cluster) Stop() {
-	close(c.actionc)
-}
-
-func (c *Cluster) loop() {
-	for f := range c.actionc {
-		f()
-	}
+	return c
 }
 
 // --- cluster.Cluster
@@ -207,40 +214,40 @@ func (c *Cluster) AllControllers(namespace string) (res []cluster.Controller, er
 // Sync performs the given actions on resources. Operations are
 // asynchronous, but serialised.
 func (c *Cluster) Sync(spec cluster.SyncDef) error {
-	errc := make(chan error)
 	logger := log.With(c.logger, "method", "Sync")
-	c.actionc <- func() {
-		errs := cluster.SyncError{}
-		for _, action := range spec.Actions {
-			logger := log.With(logger, "resource", action.ResourceID)
-			if len(action.Delete) > 0 {
-				obj, err := definitionObj(action.Delete)
-				if err == nil {
-					err = c.applier.Delete(logger, obj)
-				}
-				if err != nil {
-					errs[action.ResourceID] = err
-					continue
-				}
-			}
-			if len(action.Apply) > 0 {
-				obj, err := definitionObj(action.Apply)
-				if err == nil {
-					err = c.applier.Apply(logger, obj)
-				}
-				if err != nil {
-					errs[action.ResourceID] = err
-					continue
-				}
-			}
+
+	cs := makeChangeSet()
+	errs := cluster.SyncError{}
+	for _, action := range spec.Actions {
+		stages := []struct {
+			b   []byte
+			cmd string
+		}{
+			{action.Delete, "delete"},
+			{action.Apply, "apply"},
 		}
-		if len(errs) > 0 {
-			errc <- errs
-		} else {
-			errc <- nil
+		for _, stage := range stages {
+			if len(stage.b) == 0 {
+				continue
+			}
+			obj, err := definitionObj(stage.b)
+			id := action.ResourceID
+			if err == nil {
+				cs.stage(stage.cmd, id, obj)
+			} else {
+				errs[id] = err
+				break
+			}
 		}
 	}
-	return <-errc
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.applier.apply(logger, cs, errs)
+	if len(errs) != 0 {
+		return errs
+	}
+	return nil
 }
 
 func (c *Cluster) Ping() error {
@@ -323,11 +330,11 @@ func mergeCredentials(c *Cluster, namespace string, podTemplate apiv1.PodTemplat
 		var ok bool
 		// These differ in format; but, ParseCredentials will
 		// handle either.
-		switch api.SecretType(secret.Type) {
-		case api.SecretTypeDockercfg:
-			decoded, ok = secret.Data[api.DockerConfigKey]
-		case api.SecretTypeDockerConfigJson:
-			decoded, ok = secret.Data[api.DockerConfigJsonKey]
+		switch apiv1.SecretType(secret.Type) {
+		case apiv1.SecretTypeDockercfg:
+			decoded, ok = secret.Data[apiv1.DockerConfigKey]
+		case apiv1.SecretTypeDockerConfigJson:
+			decoded, ok = secret.Data[apiv1.DockerConfigJsonKey]
 		default:
 			c.logger.Log("skip", "unknown type", "secret", namespace+"/"+secret.Name, "type", secret.Type)
 			continue
