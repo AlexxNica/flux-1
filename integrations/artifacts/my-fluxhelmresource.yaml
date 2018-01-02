@@ -1,0 +1,7 @@
+apiVersion: integrations.flux/v1
+kind: FluxHelmResource
+metadata:
+  name: my-fluxhelmresource
+spec:
+  image: quay.io/weaveworks/helloworld:master-a000001
+  image-tag: master-a000001
