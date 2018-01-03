@@ -14,15 +14,21 @@ type FluxHelmResource struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec FluxHelmResourceSpec `json:"spec"`
+	Spec   FluxHelmResourceSpec   `json:"spec"`
+	Status FluxHelmResourceStatus `json:"status,omitempty"`
 }
 
 // FluxHelmResourceSpec is the spec for a FluxHelmResource resource
 type FluxHelmResourceSpec struct {
-	Namespace     string           `json:"namespace"`
-	Image         string           `json:"image"`
-	ImageTag      string           `json:"image-tag,omitempty"`
-	Customization []HelmChartParam `json:"customization,omitempty"`
+	Namespace      string           `json:"namespace"`
+	Image          string           `json:"image"`
+	ImageTag       string           `json:"image-tag,omitempty"`
+	Customizations []HelmChartParam `json:"customizations,omitempty"`
+}
+
+type FluxHelmResourceStatus struct {
+	State   string `json:"state,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // HelmChartParam represents Helm Chart customization

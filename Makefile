@@ -37,6 +37,10 @@ realclean: clean
 test:
 	go test ${TEST_FLAGS} $(shell go list ./... | grep -v "^github.com/weaveworks/flux/vendor" | sort -u)
 
+build/prerequisites:
+	mkdir -p ./integrations/client
+	vendor/k8s.io/code-generator/generate-groups.sh all github.com/weaveworks/flux/integrations/client github.com/weaveworks/flux/apis integrations.flux:v1
+
 build/.%.done: docker/Dockerfile.%
 	mkdir -p ./build/docker/$*
 	cp $^ ./build/docker/$*/
@@ -46,13 +50,14 @@ build/.%.done: docker/Dockerfile.%
 build/.flux.done: build/fluxd build/kubectl
 build/.helm-operator.done: build/helm-operator build/kubectl
 
+build/fluxd:
 build/fluxd: $(FLUXD_DEPS)
 build/fluxd: cmd/fluxd/*.go
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $@ $(LDFLAGS) -ldflags "-X main.version=$(shell ./docker/image-tag)" ./cmd/fluxd
 
+build/helm-operator: build/prerequisites
 build/helm-operator: $(HELM_OPERATOR_DEPS)
 build/helm-operator: cmd/helm-operator/*.go
-	vendor/k8s.io/code-generator/generate-groups.sh all github.com/weaveworks/flux/integrations/client github.com/weaveworks/flux/apis integrations.flux:v1
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $@ $(LDFLAGS) -ldflags "-X main.version=$(shell ./docker/image-tag)" ./cmd/helm-operator
 
 build/kubectl: cache/kubectl-$(KUBECTL_VERSION) docker/kubectl.version

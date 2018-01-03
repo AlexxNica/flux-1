@@ -155,9 +155,9 @@ func main() {
 		for _, fhr := range list.Items {
 			fmt.Printf("fluxhelmresource %s with image %q, tag %q and namespace %q\n", fhr.Name, fhr.Spec.Image, fhr.Spec.ImageTag, fhr.Spec.Namespace)
 
-			fmt.Printf(">>> found %v parameters\n", len(fhr.Spec.Customization))
+			fmt.Printf(">>> found %v parameters\n", len(fhr.Spec.Customizations))
 
-			for _, cp := range fhr.Spec.Customization {
+			for _, cp := range fhr.Spec.Customizations {
 				fmt.Printf("\t\tcustomization with \n\t\tname %q\n\t\tvalue %q\n\t\ttype %q\n", cp.Name, cp.Value, cp.Type)
 			}
 
