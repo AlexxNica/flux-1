@@ -2,7 +2,7 @@
 #       apis/integrations.flux/zz_generated.deepcopy.go
 #       integrations/client/*
 #
-# required = ["k8s.io/code-generator/cmd/client-gen"]
+required = ["k8s.io/code-generator/cmd/client-gen"]
 
 [[override]]
   name = "github.com/ugorji/go"

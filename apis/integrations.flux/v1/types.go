@@ -17,11 +17,22 @@ type FluxHelmResource struct {
 	Spec FluxHelmResourceSpec `json:"spec"`
 }
 
-// FluxHelmResourceSpec is the spec for a Foo resource
+// FluxHelmResourceSpec is the spec for a FluxHelmResource resource
 type FluxHelmResourceSpec struct {
-	Image        string `json:"image"`
-	ImageVersion string `json:"image-version,omitempty"`
-	ImageTag     string `json:"image-tag,omitempty"`
+	Image         string           `json:"image"`
+	ImageTag      string           `json:"image-tag,omitempty"`
+	Customization []HelmChartParam `json:"customization,omitempty"`
+}
+
+// HelmChartParam represents Helm Chart customization
+// 	it will be applied to override the values.yaml and/or the Chart itself
+//		Name  ... parameter name; if missing this parameter will be discarded
+//		Value ...
+//		Type  ... type: string, integer, float; if missing, then string is the default
+type HelmChartParam struct {
+	Name  string `json:"name,omitempty"`
+	Value string `json:"value"`
+	Type  string `json:"type,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

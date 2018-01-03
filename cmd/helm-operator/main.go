@@ -41,8 +41,9 @@ var (
 	logger  log.Logger
 	kubectl string
 
-	kubeconfig *string
-	master     *string
+	kubeconfig      *string
+	master          *string
+	crdPollInterval *time.Duration
 
 	customKubectl *string
 	gitURL        *string
@@ -58,8 +59,6 @@ var (
 	name       *string
 	listenAddr *string
 	gcInterval *time.Duration
-
-	createCRD *bool
 )
 
 func init() {
@@ -75,6 +74,8 @@ func init() {
 
 	kubeconfig = fs.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	master = fs.String("master", "", "The address of the Kubernetes API server. Overrides any value in kubeconfig. Only required if out-of-cluster.")
+
+	crdPollInterval = fs.Duration("crd-poll-interval", 5*time.Minute, "period at which to check for custom resources")
 
 	customKubectl = fs.String("kubernetes-kubectl", "", "Optional, explicit path to kubectl tool")
 	gitURL = fs.String("git-url", "", "URL of git repo with Kubernetes manifests; e.g., git@github.com:weaveworks/flux-example")
@@ -119,83 +120,85 @@ func main() {
 		shutdownWg.Wait()
 	}()
 
+	// Check if the FluxHelmResources exist in the cluster
+	//		later on add a check that the CRD itself exists and creat it if not
+
 	fmt.Println("I am functional!")
 
-	/*
-		// Platform component.
+	// get clientset
 
-		var clusterVersion string
-		var sshKeyRing ssh.KeyRing
-		var k8s cluster.Cluster
-		var k8sManifests cluster.Manifests
-	*/
-	{
-		// get client config
+	cfg, err := clientcmd.BuildConfigFromFlags(*master, *kubeconfig)
+	if err != nil {
+		glog.Fatalf("Error building kubeconfig: %v", err)
+	}
 
+	client, err := clientset.NewForConfig(cfg)
+	if err != nil {
+		glog.Fatalf("Error building integrations clientset: %v", err)
+	}
+
+	for {
 		/*
-			restClientConfig, err := rest.InClusterConfig()
-			if err != nil {
-				logger.Log("err", err)
-				os.Exit(1)
-			}
-
-			restClientConfig.QPS = 50.0
-			restClientConfig.Burst = 100
+			// create CRD:
+			/*
+			A CRD manifest is loaded before helm-operator starts
 		*/
-
-		// get clientset
-
-		cfg, err := clientcmd.BuildConfigFromFlags(*master, *kubeconfig)
-		if err != nil {
-			glog.Fatalf("Error building kubeconfig: %v", err)
-		}
-
-		client, err := clientset.NewForConfig(cfg)
-		if err != nil {
-			glog.Fatalf("Error building integrations clientset: %v", err)
-		}
-
 		list, err := client.IntegrationsV1().FluxHelmResources("kube-system").List(metav1.ListOptions{})
 		if err != nil {
-			glog.Fatalf("Error listing all fluxhelmresources: %v", err)
+			glog.Errorf("Error listing all fluxhelmresources: %v", err)
+			time.Sleep(1 * time.Minute)
+			continue
 		}
 
 		fmt.Printf(">>> found %v items\n", len(list.Items))
 
-		for {
-			for _, fhr := range list.Items {
-				fmt.Printf("fluxhelmresource %s with image %q, tag %q\n", fhr.Name, fhr.Spec.Image, fhr.Spec.ImageTag)
+		for _, fhr := range list.Items {
+			fmt.Printf("fluxhelmresource %s with image %q, tag %q\n", fhr.Name, fhr.Spec.Image, fhr.Spec.ImageTag)
+
+			fmt.Printf(">>> found %v parameters\n", len(fhr.Spec.Customization))
+
+			for _, cp := range fhr.Spec.Customization {
+				fmt.Printf("\t\tcustomization with\n\t\tname %q\n\t\tvalue %q\n\t\ttype %q\n", cp.Name, cp.Value, cp.Type)
 			}
-			time.Sleep(5 * time.Minute)
+
 		}
-		/*
-			clientset, err := kubernetes.NewForConfig(restClientConfig)
-			if err != nil {
-				logger.Log("err", err)
-				os.Exit(1)
-			}
 
-			for {
-				fmt.Printf(">>> %#v\n\n", clientset.Endpoints("default"))
-				fmt.Printf(">>> %#v\n\n", restClientConfig)
-
-				time.Sleep(time.Duration(10 * time.Hour))
-			}
-		*/
+		time.Sleep(5 * time.Minute)
 	}
-	/*
-		// set up cluster tools
-			// kubectl
-			// cluster ?
-
-		// create CRD
-
-		// create CRD client interface
-
-		// Watch for changes in Flux-Helm CRDs
-
-	*/
 }
+
+// set up cluster tools
+// kubectl
+// cluster ?
+
+// Watch for changes in Flux-Helm CRDs
+
+/*
+	// Example Controller
+	// Watch for changes in Example objects and fire Add, Delete, Update callbacks
+	_, controller := cache.NewInformer(
+		crdclient.NewListWatch(),
+		&crd.Example{},
+		time.Minute*10,
+		cache.ResourceEventHandlerFuncs{
+			AddFunc: func(obj interface{}) {
+				fmt.Printf("add: %s \n", obj)
+			},
+			DeleteFunc: func(obj interface{}) {
+				fmt.Printf("delete: %s \n", obj)
+			},
+			UpdateFunc: func(oldObj, newObj interface{}) {
+				fmt.Printf("Update old: %s \n      New: %s\n", oldObj, newObj)
+			},
+		},
+	)
+
+	stop := make(chan struct{})
+	go controller.Run(stop)
+
+	// Wait forever
+select {}
+*/
 
 // Helper functions
 func optionalVar(fs *pflag.FlagSet, value ssh.OptionalValue, name, usage string) ssh.OptionalValue {

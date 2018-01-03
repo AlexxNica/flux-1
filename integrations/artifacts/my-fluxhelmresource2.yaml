@@ -5,3 +5,13 @@ metadata:
 spec:
   image: quay.io/weaveworks/helloworld:master-a000001
   image-tag: master-a000001
+  customization:
+    - name: param1
+      value: hello
+      type: string
+    - name: param2
+      value: world
+      type: string
+    - name: param3
+      value: "101"
+      type: integer
