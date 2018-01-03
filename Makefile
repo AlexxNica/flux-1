@@ -34,7 +34,7 @@ clean:
 realclean: clean
 	rm -rf ./cache
 
-test:
+test: build/prerequisites
 	go test ${TEST_FLAGS} $(shell go list ./... | grep -v "^github.com/weaveworks/flux/vendor" | sort -u)
 
 build/prerequisites:
