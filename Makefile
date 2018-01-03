@@ -52,6 +52,7 @@ build/fluxd: cmd/fluxd/*.go
 
 build/helm-operator: $(HELM_OPERATOR_DEPS)
 build/helm-operator: cmd/helm-operator/*.go
+	vendor/k8s.io/code-generator/generate-groups.sh all github.com/weaveworks/flux/integrations/client github.com/weaveworks/flux/apis integrations.flux:v1
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $@ $(LDFLAGS) -ldflags "-X main.version=$(shell ./docker/image-tag)" ./cmd/helm-operator
 
 build/kubectl: cache/kubectl-$(KUBECTL_VERSION) docker/kubectl.version

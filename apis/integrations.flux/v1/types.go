@@ -19,6 +19,7 @@ type FluxHelmResource struct {
 
 // FluxHelmResourceSpec is the spec for a FluxHelmResource resource
 type FluxHelmResourceSpec struct {
+	Namespace     string           `json:"namespace"`
 	Image         string           `json:"image"`
 	ImageTag      string           `json:"image-tag,omitempty"`
 	Customization []HelmChartParam `json:"customization,omitempty"`
