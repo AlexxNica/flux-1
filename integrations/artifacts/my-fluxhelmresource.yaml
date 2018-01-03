@@ -6,3 +6,6 @@ spec:
   namespace: default
   image: quay.io/weaveworks/helloworld:master-a000001
   image-tag: master-a000001
+status:
+  state: good
+  message: "Hello World"

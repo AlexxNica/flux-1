@@ -6,7 +6,7 @@ spec:
   namespace: default
   image: quay.io/weaveworks/helloworld:master-a000001
   image-tag: master-a000001
-  customization:
+  customizations:
     - name: param1
       value: hello
       type: string
