@@ -26,12 +26,16 @@ import (
 
 	//"github.com/weaveworks/flux/git"
 
-	"github.com/weaveworks/flux/ssh"
-
 	"github.com/golang/glog"
 
+	ifinformers "github.com/weaveworks/flux/integrations/client/informers/externalversions"
+	//"github.com/weaveworks/flux/integrations/helm/operator/operator"
+
 	clientset "github.com/weaveworks/flux/integrations/client/clientset/versioned"
+	"github.com/weaveworks/flux/integrations/helm/operator"
+	"github.com/weaveworks/flux/ssh"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
@@ -41,9 +45,10 @@ var (
 	logger  log.Logger
 	kubectl string
 
-	kubeconfig      *string
-	master          *string
-	crdPollInterval *time.Duration
+	kubeconfig          *string
+	master              *string
+	crdPollInterval     *time.Duration
+	eventHandlerWorkers *uint
 
 	customKubectl *string
 	gitURL        *string
@@ -75,7 +80,8 @@ func init() {
 	kubeconfig = fs.String("kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 	master = fs.String("master", "", "The address of the Kubernetes API server. Overrides any value in kubeconfig. Only required if out-of-cluster.")
 
-	crdPollInterval = fs.Duration("crd-poll-interval", 5*time.Minute, "period at which to check for custom resources")
+	crdPollInterval = fs.Duration("crd-poll-interval", 5*time.Minute, "Period at which to check for custom resources")
+	eventHandlerWorkers = fs.Uint("event-handler-workers", 2, "Number of workers processing events for Flux-Helm custom resources")
 
 	customKubectl = fs.String("kubernetes-kubectl", "", "Optional, explicit path to kubectl tool")
 	gitURL = fs.String("git-url", "", "URL of git repo with Kubernetes manifests; e.g., git@github.com:weaveworks/flux-example")
@@ -90,15 +96,16 @@ func init() {
 	sshKeyBits = optionalVar(fs, &ssh.KeyBitsValue{}, "ssh-keygen-bits", "-b argument to ssh-keygen (default unspecified)")
 	sshKeyType = optionalVar(fs, &ssh.KeyTypeValue{}, "ssh-keygen-type", "-t argument to ssh-keygen (default unspecified)")
 
-	// Setup logging
-	logger = log.NewLogfmtLogger(os.Stderr)
-	logger = log.With(logger, "ts", log.DefaultTimestampUTC)
-	logger = log.With(logger, "caller", log.DefaultCaller)
 }
 
 func main() {
 
 	fs.Parse(os.Args)
+
+	// Setup logging
+	logger = log.NewLogfmtLogger(os.Stderr)
+	logger = log.With(logger, "ts", log.DefaultTimestampUTC)
+	logger = log.With(logger, "caller", log.DefaultCaller)
 
 	// Shutdown
 	errc := make(chan error)
@@ -132,43 +139,63 @@ func main() {
 		glog.Fatalf("Error building kubeconfig: %v", err)
 	}
 
-	client, err := clientset.NewForConfig(cfg)
+	kubeClient, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		glog.Fatalf("Error building kubernetes clientset: %s", err.Error())
+	}
+
+	ifClient, err := clientset.NewForConfig(cfg)
 	if err != nil {
 		glog.Fatalf("Error building integrations clientset: %v", err)
 	}
 
-	for {
-		/*
-			// create CRD:
+	//	kubeInformerFactory := kubeinformers.NewSharedInformerFactory(kube, time.Second*30)
+	ifInformerFactory := ifinformers.NewSharedInformerFactory(ifClient, time.Second*30)
+
+	opr := operator.NewController(logger, kubeClient, ifClient, ifInformerFactory)
+
+	//go kubeInformerFactory.Start(stopCh)
+	go ifInformerFactory.Start(shutdown)
+
+	if err = opr.Run(2, shutdown); err != nil {
+		glog.Fatalf("Error running controller: %s", err.Error())
+	}
+
+	go func() {
+		for {
 			/*
-			A CRD manifest is loaded before helm-operator starts
-		*/
-		list, err := client.IntegrationsV1().FluxHelmResources("kube-system").List(metav1.ListOptions{})
-		if err != nil {
-			glog.Errorf("Error listing all fluxhelmresources: %v", err)
-			time.Sleep(1 * time.Minute)
-			continue
-		}
-
-		fmt.Printf(">>> found %v items\n\n", len(list.Items))
-
-		for _, fhr := range list.Items {
-			fmt.Println("-------------------------------")
-
-			fmt.Printf("fluxhelmresource %s with image %q, tag %q and namespace %q\n", fhr.Name, fhr.Spec.Image, fhr.Spec.ImageTag, fhr.Spec.Namespace)
-
-			fmt.Printf("\t\t>>> found %v parameters\n", len(fhr.Spec.Customizations))
-
-			for _, cp := range fhr.Spec.Customizations {
-				fmt.Printf("\t\t * customization with \n\t\tname %q\n\t\tvalue %q\n\t\ttype %q\n", cp.Name, cp.Value, cp.Type)
+				// create CRD:
+				/*
+				A CRD manifest is loaded before helm-operator starts
+			*/
+			list, err := ifClient.IntegrationsV1().FluxHelmResources("kube-system").List(metav1.ListOptions{})
+			if err != nil {
+				glog.Errorf("Error listing all fluxhelmresources: %v", err)
+				time.Sleep(1 * time.Minute)
+				continue
 			}
 
-			fmt.Println("-------------------------------")
+			fmt.Printf(">>> found %v items\n\n", len(list.Items))
 
+			for _, fhr := range list.Items {
+				fmt.Println("-------------------------------")
+
+				fmt.Printf("fluxhelmresource %s for chart %q with customizations %#v\n", fhr.Name, fhr.Spec.Chart, fhr.Spec.Customizations)
+
+				fmt.Printf("\t\t>>> found %v parameters\n", len(fhr.Spec.Customizations))
+
+				for _, cp := range fhr.Spec.Customizations {
+					fmt.Printf("\t\t * customization with \n\t\tname %q\n\t\tvalue %q\n\t\ttype %q\n", cp.Name, cp.Value, cp.Type)
+				}
+
+				fmt.Println("-------------------------------")
+
+			}
+
+			time.Sleep(5 * time.Minute)
 		}
+	}()
 
-		time.Sleep(5 * time.Minute)
-	}
 }
 
 // set up cluster tools
