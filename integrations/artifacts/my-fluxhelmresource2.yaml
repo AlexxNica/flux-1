@@ -4,15 +4,14 @@ metadata:
   name: my-fluxhelmresource2
 spec:
   namespace: default
-  image: quay.io/weaveworks/helloworld:master-a000001
-  image-tag: master-a000001
+  chart: Chart1
   customizations:
+    - name: image
+      value: quay.io/weaveworks/helloworld
+      type: string
+    - name: image-tag
+      value: master-a000001
+      type: string
     - name: param1
-      value: hello
-      type: string
-    - name: param2
-      value: world
-      type: string
-    - name: param3
       value: "101"
       type: integer

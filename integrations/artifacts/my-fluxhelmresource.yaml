@@ -4,8 +4,7 @@ metadata:
   name: my-fluxhelmresource
 spec:
   namespace: default
-  image: quay.io/weaveworks/helloworld:master-a000001
-  image-tag: master-a000001
+  chart: Chart
 status:
   state: good
   message: "Hello World"
