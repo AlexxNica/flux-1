@@ -2,8 +2,8 @@ apiVersion: integrations.flux/v1
 kind: FluxHelmResource
 metadata:
   name: my-fluxhelmresource2
+  namespace: kube-system
 spec:
-  namespace: default
   chart: Chart1
   customizations:
     - name: image
@@ -13,5 +13,5 @@ spec:
       value: master-a000001
       type: string
     - name: param1
-      value: "101"
+      value: "102"
       type: integer

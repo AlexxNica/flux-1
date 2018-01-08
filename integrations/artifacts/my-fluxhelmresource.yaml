@@ -2,8 +2,8 @@ apiVersion: integrations.flux/v1
 kind: FluxHelmResource
 metadata:
   name: my-fluxhelmresource
+  namespace: flux
 spec:
-  namespace: default
   chart: Chart
 status:
   state: good
